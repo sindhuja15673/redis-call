@@ -24,8 +24,8 @@ app.use(bodyParser.json({ limit: '30mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 /* ---------------- CONFIG ---------------- */
-const GLOBAL_RATE_PER_MIN = 10;
-const MAX_ACTIVE_CALLS = 100;
+const GLOBAL_RATE_PER_MIN = 6;
+const MAX_ACTIVE_CALLS = 3;
 
 const ACTIVE_INSTANCES = 'active_instances';
 const PENDING_QUEUE = 'pending_queue';
@@ -97,7 +97,7 @@ app.post('/upload', async (req, res) => {
   for (const r of records) {
     const id = uuidv4();
     pipe.hmset(`job:${id}`, {
-      id,
+      requestId: id,
       payload: JSON.stringify(r),
       session: INSTANCE_ID,
       createdAt: Date.now()

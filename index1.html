@@ -86,7 +86,7 @@
  
  <script>
  const API = location.hostname === "localhost"
-   ? location.protocol + "//" + location.hostname + ":3000"
+   ? location.protocol + "//" + location.hostname + ":3001"
    : location.origin;
  
  const socket = io(API);
@@ -104,7 +104,7 @@
  });
  
  socket.emit("request-stats");
- setInterval(() => socket.emit("request-stats"), 3000);
+ setInterval(() => socket.emit("request-stats"), 3001);
  
  function parse(file){
    return new Promise(r=>{

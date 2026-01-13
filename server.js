@@ -21,7 +21,7 @@ const redis = new Redis({ host: '127.0.0.1', port: 6379 });
 /* ---------------- MIDDLEWARE ---------------- */
 app.use(cors());
 app.use(bodyParser.json({ limit: '30mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+// app.use(express.static(path.join(__dirname, 'public')));
 
 /* ---------------- CONFIG ---------------- */
 const GLOBAL_RATE_PER_MIN = 6;
@@ -34,8 +34,15 @@ const COMPLETED_LIST = 'completed_list';
 const ACTIVE_CALLS = 'active_calls';
 
 /* ---------------- ROOT ---------------- */
+// app.get('/', (_, res) => {
+//   res.sendFile(path.join(__dirname, 'index.html'));
+// });
 app.get('/', (_, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  res.sendFile(path.join(__dirname, 'index.html')); // default
+});
+
+app.get('/alt', (_, res) => {
+  res.sendFile(path.join(__dirname, 'index1.html')); // alternate dashboard
 });
 
 /* ---------------- TIME ---------------- */

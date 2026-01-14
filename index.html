@@ -76,7 +76,7 @@
      <div>
        <div class="panel">
          <strong>Export / Debug</strong><br><br>
-         <button onclick="download()">Download Completed</button>
+         <button onclick="download()">Download Completed Json</button>
          <button class="warn" onclick="clearOut()">Clear</button>
          <pre id="exportOut"></pre>
        </div>
@@ -85,70 +85,28 @@
  </div>
  
  <script>
-//  const API = location.hostname === "localhost"
-//    ? location.protocol + "//" + location.hostname + ":3000"
-//    : location.origin;
- 
-//  const socket = io(API);
- 
-//  socket.on("stats", s => {
-//    pending.textContent = s.pending;
-//    processing.textContent = s.processing;
-//    completed.textContent = s.completed;
-//    active.textContent = s.active;
-//    totalMade.textContent = s.totalMade;
-//    totalResolved.textContent = s.totalResolved;
-//    limit.textContent = s.globalRatePerMin;
-//    used.textContent = s.globalRateThisMin;
-//    perPort.textContent = s.perSessionLimit;
-//  });
- 
-//  socket.emit("request-stats");
-//  setInterval(() => socket.emit("request-stats"), 3000);
- 
-//  function parse(file){
-//    return new Promise(r=>{
-//      const fr=new FileReader();
-//      fr.onload=e=>{
-//        const wb=XLSX.read(new Uint8Array(e.target.result),{type:"array"});
-//        r(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]));
-//      };
-//      fr.readAsArrayBuffer(file);
-//    });
-//  }
- 
-//  async function upload(){
-//    if(!file.files.length) return alert("Choose file");
-//    const data = await parse(file.files[0]);
-//    status.textContent = `Uploading ${data.length} records...`;
- 
-//    await fetch(API+"/upload",{
-//      method:"POST",
-//      headers:{'Content-Type':'application/json'},
-//      body:JSON.stringify({ records:data })
-//    });
- 
-//    status.textContent="Upload done";
-//  }
-//  const API = location.protocol + "//" + location.host; 
+
  const API = window.location.origin; // this ensures the API matches the port of the current page
 
 const socket = io(API);
+socket.on("stats", updateUI);
 
-socket.on("stats", s => {
-  pending.textContent = s.pending;
-  processing.textContent = s.processing;
-  completed.textContent = s.completed;
-  active.textContent = s.active;
-  totalMade.textContent = s.totalMade;
-  totalResolved.textContent = s.totalResolved;
-  limit.textContent = s.globalRatePerMin;
-  used.textContent = s.globalRateThisMin;
-  perPort.textContent = s.perSessionLimit;
-});
 
-socket.emit("request-stats");
-setInterval(() => socket.emit("request-stats"), 3000);
+function updateUI(s) {
+  pending.textContent = s.pending ?? 0;
+  processing.textContent = s.processing ?? 0;
+  completed.textContent = s.completed ?? 0;
+  active.textContent = s.active ?? 0;
+
+  limit.textContent = s.rateLimit ?? "-";
+  used.textContent = s.usedThisMin ?? "-";
+  perPort.textContent = s.maxActive ?? "-";
+
+  totalMade.textContent =
+    (s.pending ?? 0) + (s.processing ?? 0) + (s.completed ?? 0);
+
+  totalResolved.textContent = s.completed ?? 0;
+}
 
 // async function upload() {
 //   if (!file.files.length) return alert("Choose file");
@@ -191,19 +149,18 @@ async function upload() {
 
   reader.readAsArrayBuffer(f); // read file
 }
+async function resetAll(){
+  if(confirm("Reset all?")){
+    await fetch(API + "/reset", { method: "POST" });
 
- async function resetAll(){
-   if(confirm("Reset all?")){
-     await fetch(API+"/reset",{method:"POST"});
-     socket.emit("request-stats");
-     exportOut.textContent="";
-   }
- }
- 
-//  async function download(){
-//    const d=await fetch(API+"/export-completed").then(r=>r.json());
-//    exportOut.textContent=JSON.stringify(d,null,2);
-//  }
+    // Force immediate UI refresh
+    const stats = await fetch(API + "/stats").then(r => r.json());
+    updateUI(stats);
+
+    exportOut.textContent = "";
+  }
+}
+
 async function download() {
   try {
     const data = await fetch(API + "/export-completed").then(r => r.json());

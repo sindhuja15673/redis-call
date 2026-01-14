@@ -1,8 +1,6 @@
 
-// server.js
 const express = require('express');
 const http = require('http');
-const path = require('path');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const { Server } = require('socket.io');
@@ -10,42 +8,35 @@ const Redis = require('ioredis');
 const { v4: uuidv4 } = require('uuid');
 
 const PORT = process.env.PORT || 3000;
-const INSTANCE_ID = process.env.INSTANCE_ID || `session-${PORT}`;
+const INSTANCE_ID = `session-${PORT}`;
 
-const app = express(); // ✅ MUST COME FIRST
+/* ---------------- DYNAMIC CONFIG ---------------- */
+const CONFIG = {
+  RATE_PER_MIN: Number(process.env.RATE_PER_MIN || 10),
+  MAX_ACTIVE: Number(process.env.MAX_ACTIVE || 5),
+};
+
+/* ---------------- REDIS ---------------- */
+const redis = new Redis({ host: '127.0.0.1', port: 6379 });
+
+/* ---------------- REDIS NAMESPACE (PER PORT) ---------------- */
+const NS = `queue:${INSTANCE_ID}`;
+
+const PENDING_QUEUE = `${NS}:pending`;
+const PROCESSING_LIST = `${NS}:processing`;
+const COMPLETED_LIST = `${NS}:completed`;
+const ACTIVE_CALLS = `${NS}:active`;
+
+/* ---------------- APP ---------------- */
+const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
-const redis = new Redis({ host: '127.0.0.1', port: 6379 });
-
-/* ---------------- MIDDLEWARE ---------------- */
 app.use(cors());
 app.use(bodyParser.json({ limit: '30mb' }));
-// app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(__dirname));
 
-/* ---------------- CONFIG ---------------- */
-const GLOBAL_RATE_PER_MIN = 6;
-const MAX_ACTIVE_CALLS = 3;
-
-const ACTIVE_INSTANCES = 'active_instances';
-const PENDING_QUEUE = 'pending_queue';
-const PROCESSING_LIST = 'processing_list';
-const COMPLETED_LIST = 'completed_list';
-const ACTIVE_CALLS = 'active_calls';
-
-/* ---------------- ROOT ---------------- */
-// app.get('/', (_, res) => {
-//   res.sendFile(path.join(__dirname, 'index.html'));
-// });
-app.get('/', (_, res) => {
-  res.sendFile(path.join(__dirname, 'index.html')); // default
-});
-
-app.get('/alt', (_, res) => {
-  res.sendFile(path.join(__dirname, 'index1.html')); // alternate dashboard
-});
-
-/* ---------------- TIME ---------------- */
+/* ---------------- TIME KEY ---------------- */
 function minuteKey() {
   const d = new Date();
   return (
@@ -57,41 +48,42 @@ function minuteKey() {
   );
 }
 
-/* ---------------- LUA ---------------- */
+
+async function getStats() {
+  const minute = minuteKey();
+  const RATE_KEY = `${NS}:rate:${minute}`;
+
+  return {
+    port: PORT,
+    pending: await redis.llen(PENDING_QUEUE),
+    processing: await redis.llen(PROCESSING_LIST),
+    completed: await redis.llen(COMPLETED_LIST),
+    active: Number(await redis.get(ACTIVE_CALLS)) || 0,
+    rateLimit: CONFIG.RATE_PER_MIN,
+    usedThisMin: Number(await redis.get(RATE_KEY)) || 0,
+    maxActive: CONFIG.MAX_ACTIVE
+  };
+}
+
+
+/* ---------------- LUA (PER PORT LIMITS) ---------------- */
 const luaPop = `
 local active = tonumber(redis.call('GET', KEYS[1]) or '0')
 if active >= tonumber(ARGV[1]) then return nil end
 
-local global = tonumber(redis.call('GET', KEYS[2]) or '0')
-if global >= tonumber(ARGV[2]) then return nil end
+local rate = tonumber(redis.call('GET', KEYS[2]) or '0')
+if rate >= tonumber(ARGV[2]) then return nil end
 
 local job = redis.call('LPOP', KEYS[3])
 if not job then return nil end
 
 redis.call('INCR', KEYS[1])
 redis.call('INCR', KEYS[2])
-redis.call('RPUSH', KEYS[4], job)
 redis.call('EXPIRE', KEYS[2], 60)
+redis.call('RPUSH', KEYS[4], job)
 
 return job
 `;
-/* ---------------- EXPORT COMPLETED ---------------- */
-app.get('/export-completed', async (req, res) => {
-  try {
-    const completedIds = await redis.lrange(COMPLETED_LIST, 0, -1);
-    const completedJobs = completedIds.map(id => {
-      try {
-        return JSON.parse(id);
-      } catch (e) {
-        return id; // fallback in case not JSON
-      }
-    });
-    res.json(completedJobs);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to fetch completed jobs' });
-  }
-});
 
 /* ---------------- UPLOAD ---------------- */
 app.post('/upload', async (req, res) => {
@@ -101,6 +93,7 @@ app.post('/upload', async (req, res) => {
   }
 
   const pipe = redis.pipeline();
+
   for (const r of records) {
     const id = uuidv4();
     pipe.hmset(`job:${id}`, {
@@ -113,52 +106,54 @@ app.post('/upload', async (req, res) => {
   }
 
   await pipe.exec();
-  res.json({ message: 'Uploaded', count: records.length });
+  res.json({ uploaded: records.length, port: PORT });
 });
 
 /* ---------------- STATS ---------------- */
 app.get('/stats', async (_, res) => {
-  const minute = minuteKey();
-
-  res.json({
-    pending: await redis.llen(PENDING_QUEUE),
-    processing: await redis.llen(PROCESSING_LIST),
-    completed: await redis.llen(COMPLETED_LIST),
-    active: Number(await redis.get(ACTIVE_CALLS)) || 0,
-    globalRatePerMin: GLOBAL_RATE_PER_MIN,
-    globalRateThisMin: Number(await redis.get(`rate:global:${minute}`)) || 0,
-    perSessionLimit: GLOBAL_RATE_PER_MIN,
-    sessionRates: { A: 0, B: 0 }
-  });
+  res.json(await getStats());
 });
 
-/* ---------------- RESET ---------------- */
+
+/* ---------------- RESET (SAFE) ---------------- */
 app.post('/reset', async (_, res) => {
-  await redis.flushall();
-  await redis.set(ACTIVE_CALLS, 0);
-  await redis.sadd(ACTIVE_INSTANCES, INSTANCE_ID);
-  res.json({ message: 'System reset' });
+  const keys = await redis.keys(`${NS}:*`);
+  if (keys.length) await redis.del(keys);
+
+  
+  const freshStats = await getStats();
+  io.emit('stats', freshStats);  
+
+  res.json({ message: `Reset done for ${INSTANCE_ID}` });
 });
 
-/* ---------------- PROCESSING ---------------- */
+/* ---------------- EXPORT ---------------- */
+app.get('/export-completed', async (_, res) => {
+  const rows = await redis.lrange(COMPLETED_LIST, 0, -1);
+  res.json(rows.map(r => JSON.parse(r)));
+});
+
+/* ---------------- PROCESSOR ---------------- */
 async function tryProcess() {
   const minute = minuteKey();
+  const RATE_KEY = `${NS}:rate:${minute}`;
 
   const jobId = await redis.eval(
     luaPop,
     4,
     ACTIVE_CALLS,
-    `rate:global:${minute}`,
+    RATE_KEY,
     PENDING_QUEUE,
     PROCESSING_LIST,
-    MAX_ACTIVE_CALLS,
-    GLOBAL_RATE_PER_MIN
+    CONFIG.MAX_ACTIVE,
+    CONFIG.RATE_PER_MIN
   );
 
   if (!jobId) return;
 
-  const job = await redis.hgetall(`job:${jobId}`);
   await new Promise(r => setTimeout(r, 1500));
+
+  const job = await redis.hgetall(`job:${jobId}`);
 
   await redis.multi()
     .lrem(PROCESSING_LIST, 1, jobId)
@@ -169,18 +164,23 @@ async function tryProcess() {
   io.emit('stats', await fetchStats());
 }
 
+// async function fetchStats() {
+//   return (await fetch(`http://localhost:${PORT}/stats`)).json();
+// }
 async function fetchStats() {
-  return (await fetch(`http://localhost:${PORT}/stats`)).json();
+  return await getStats();
 }
 
-setInterval(() => tryProcess(), 1000);
+setInterval(tryProcess, 1000);
 
 /* ---------------- SOCKET ---------------- */
 io.on('connection', socket => {
-  socket.emit('stats', {});
+  fetchStats().then(s => socket.emit('stats', s));
 });
 
 /* ---------------- START ---------------- */
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT} | ${INSTANCE_ID}`);
+  console.log(
+    `🚀 Port ${PORT} | Rate ${CONFIG.RATE_PER_MIN}/min | MaxActive ${CONFIG.MAX_ACTIVE}`
+  );
 });

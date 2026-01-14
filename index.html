@@ -1,4 +1,4 @@
-
+<!-- 
  <!DOCTYPE html>
  <html lang="en">
  <head>
@@ -78,6 +78,8 @@
          <strong>Export / Debug</strong><br><br>
          <button onclick="download()">Download Completed Json</button>
          <button class="warn" onclick="clearOut()">Clear</button>
+         <button onclick="downloadGlobal()">Download All Ports Calls</button>
+
          <pre id="exportOut"></pre>
        </div>
      </div>
@@ -186,9 +188,280 @@ async function download() {
     alert("Download failed. Check console for details.");
   }
 }
+async function downloadGlobal() {
+  const data = await fetch(API + "/export-all-completed").then(r => r.json());
+
+  const jsonStr = JSON.stringify(data, null, 2);
+  const blob = new Blob([jsonStr], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "all_ports_completed_calls.json";
+  document.body.appendChild(a);
+  a.click();
+
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 
  function clearOut(){ exportOut.textContent=""; }
  </script>
  </body>
  </html>
- 
+  -->
+
+
+  <!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Call Queue Dashboard</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+  <style>
+    body { font-family: Inter, Arial, sans-serif; margin:18px; background:#fafafa; color:#222; }
+    .container { max-width:1100px; margin:auto; background:#fff; padding:16px; border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,.06); }
+    .grid { display:grid; grid-template-columns:1fr 360px; gap:14px; }
+    .panel { border:1px solid #eee; padding:12px; border-radius:8px; }
+    .kpi-row { display:flex; gap:12px; flex-wrap:wrap; }
+    .kpi { flex:1; min-width:160px; background:#f7fbf8; padding:10px; border-radius:8px; border:1px solid #edf6ee; }
+    .label { font-size:12px; color:#666; }
+    .value { font-size:18px; font-weight:600; margin-top:6px; }
+    .rates { display:flex; gap:8px; margin-top:8px; }
+    .rate-pill { background:#f1f7ff; border:1px solid #e6f0ff; padding:6px 10px; border-radius:999px; font-size:13px; }
+    .upload-box { border:1px dashed #ccc; padding:14px; border-radius:8px; margin-top:24px; }
+    button { background:#2563eb; color:#fff; border:0; border-radius:6px; padding:8px 12px; cursor:pointer; }
+    button.secondary { background:#6b7280; }
+    button.warn { background:#ef4444; }
+    #exportOut { background:#f7f7fb; height:360px; overflow:auto; padding:8px; border-radius:6px; }
+    #globalCalls { background:#f7f7fb; border:1px solid #ddd; padding:8px; border-radius:6px; font-size:12px; overflow:auto; }
+    @media(max-width:980px){ .grid{grid-template-columns:1fr;} }
+  </style>
+</head>
+
+<body>
+<div class="container">
+  <h1>Call Queue Dashboard</h1>
+
+  <!-- Global Completed Calls Panel -->
+  <!-- <div class="panel" style="margin-bottom:16px;">
+    <strong>Global Completed Calls (All Sessions)</strong>
+    <button onclick="refreshGlobal()">Refresh</button>
+    <div id="globalCount" class="value" style="margin-top:8px; font-size:16px;">0 calls</div>
+    <pre id="globalCalls" style="max-height:200px;"></pre>
+  </div> -->
+<div class="panel" style="margin-bottom:16px;">
+  <strong>Global Completed Calls (All Users)</strong>
+  <span id="globalCallsCount">0</span>
+  <button onclick="refreshGlobal()" style="margin-left:10px;">Refresh</button>
+</div>
+
+  <!-- Per-user dashboard -->
+  <div class="grid">
+    <div>
+      <div class="panel">
+        <div class="kpi-row">
+          <div class="kpi"><div class="label">Pending</div><div id="pending" class="value">0</div></div>
+          <div class="kpi"><div class="label">Processing</div><div id="processing" class="value">0</div></div>
+          <div class="kpi"><div class="label">Completed</div><div id="completed" class="value">0</div></div>
+        </div>
+
+        <div class="kpi-row" style="margin-top:12px">
+          <div class="kpi"><div class="label">Total Made</div><div id="totalMade" class="value">0</div></div>
+        </div>
+
+        <div style="margin-top:12px">
+          <div class="label">Global Rate</div>
+          <div class="rates">
+            <div class="rate-pill">Limit: <span id="limit">-</span></div>
+            <div class="rate-pill">Used/min: <span id="used">-</span></div>
+            <div class="rate-pill">Per-port: <span id="perPort">-</span></div>
+          </div>
+        </div>
+
+        <div class="upload-box">
+          <strong>Upload Calls</strong><br><br>
+          <input id="file" type="file" accept=".csv,.xls,.xlsx" />
+          <br><br>
+          <button onclick="upload()">Upload</button>
+          <span id="status" style="margin-left:10px;color:#444"></span>
+        </div>
+
+        <div style="margin-top:16px">
+          <button class="secondary" onclick="resetAll()">Reset Calls</button>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <strong>Export / Debug</strong><br><br>
+        <button onclick="download()">Download Completed Json</button>
+        <button class="warn" onclick="clearOut()">Clear</button>
+        <button onclick="downloadGlobal()">Download All Ports Calls</button>
+        <pre id="exportOut"></pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const pending = document.getElementById("pending");
+const processing = document.getElementById("processing");
+const completed = document.getElementById("completed");
+const totalMade = document.getElementById("totalMade");
+const limit = document.getElementById("limit");
+const used = document.getElementById("used");
+const perPort = document.getElementById("perPort");
+const file = document.getElementById("file");
+const status = document.getElementById("status");
+const exportOut = document.getElementById("exportOut");
+
+const globalCount = document.getElementById("globalCount");
+const globalCalls = document.getElementById("globalCalls");
+
+/* ---------------- USER ---------------- */
+const params = new URLSearchParams(window.location.search);
+const USER = params.get("user") || "anonymous";
+
+/* ---------------- API & SOCKET ---------------- */
+const API = window.location.origin;
+const socket = io(window.location.origin, { query: { user: USER } });
+
+socket.on("stats", updateUI);
+
+/* ---------------- UI UPDATE ---------------- */
+function updateUI(s) {
+  pending.textContent = s.pending ?? 0;
+  processing.textContent = s.processing ?? 0;
+  completed.textContent = s.completed ?? 0;
+
+  limit.textContent = s.rateLimit ?? "-";
+  used.textContent = s.usedThisMin ?? "-";
+  perPort.textContent = s.maxActive ?? "-";
+
+  totalMade.textContent =
+    (s.pending ?? 0) + (s.processing ?? 0) + (s.completed ?? 0);
+}
+
+/* ---------------- UPLOAD ---------------- */
+async function upload() {
+  if (!file.files.length) return alert("Choose file");
+
+  const f = file.files[0];
+  const reader = new FileReader();
+
+  reader.onload = async function (e) {
+    const dataArray = new Uint8Array(e.target.result);
+    const workbook = XLSX.read(dataArray, { type: "array" });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(sheet);
+
+    status.textContent = `Uploading ${data.length} records...`;
+
+    await fetch(`${API}/upload?user=${USER}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ records: data })
+    });
+
+    status.textContent = "Upload done";
+  };
+
+  reader.readAsArrayBuffer(f);
+}
+
+/* ---------------- RESET ---------------- */
+async function resetAll() {
+  if (confirm("Reset all?")) {
+    await fetch(`${API}/reset?user=${USER}`, { method: "POST" });
+
+    const stats = await fetch(`${API}/stats?user=${USER}`).then(r => r.json());
+    updateUI(stats);
+
+    exportOut.textContent = "";
+  }
+}
+
+/* ---------------- DOWNLOAD ---------------- */
+async function download() {
+  const data = await fetch(`${API}/export-completed?user=${USER}`).then(r => r.json());
+  const jsonStr = JSON.stringify(data, null, 2);
+
+  const blob = new Blob([jsonStr], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `completed_${USER}.json`;
+  document.body.appendChild(a);
+  a.click();
+
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  exportOut.textContent = jsonStr;
+}
+
+async function downloadGlobal() {
+  const data = await fetch(`${API}/export-all-completed`).then(r => r.json());
+  const jsonStr = JSON.stringify(data, null, 2);
+
+  const blob = new Blob([jsonStr], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "all_ports_completed_calls.json";
+  document.body.appendChild(a);
+  a.click();
+
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/* ---------------- GLOBAL CALLS ---------------- */
+// async function refreshGlobal() {
+//   try {
+//     const data = await fetch(`${API}/export-all-completed`).then(r => r.json());
+
+//     globalCount.textContent = `${data.length} calls`;
+//     globalCalls.textContent = JSON.stringify(data.slice(-10), null, 2);
+//   } catch (err) {
+//     console.error("Failed to fetch global calls", err);
+//     globalCount.textContent = "Error";
+//     globalCalls.textContent = "";
+//   }
+// }
+const globalCallsCount = document.getElementById("globalCallsCount");
+
+async function refreshGlobal() {
+  try {
+    const data = await fetch(`${API}/global-stats`).then(r => r.json());
+    globalCallsCount.textContent = data.totalGlobalCompleted ?? 0;
+  } catch (err) {
+    console.error("Failed to fetch global stats", err);
+  }
+}
+
+// Auto-refresh every 5 seconds
+setInterval(refreshGlobal, 5000);
+
+// Also refresh on page load
+refreshGlobal();
+
+// Auto-refresh every 5 seconds
+setInterval(refreshGlobal, 5000);
+refreshGlobal();
+
+/* ---------------- CLEAR ---------------- */
+function clearOut() {
+  exportOut.textContent = "";
+}
+</script>
+</body>
+</html>
